@@ -38,6 +38,45 @@ tests/
 AGENTS.md           # System prompt injected into the agent
 ```
 
+## Execution Flow
+
+The agent runs a **ReAct loop** (reason → act → observe) wrapped by two harness gates: one on every SQL query and one on the final output.
+
+```mermaid
+flowchart TD
+    A[analyze_table dataset, table] --> B[ReAct Agent<br/>Claude Sonnet 4.6]
+    B --> C{Next action?}
+
+    C -->|inspect schema| D[get_table_schema]
+    D --> E[BigQuery<br/>table metadata]
+    E --> B
+
+    C -->|run query| F[run_bq_query]
+    F --> G{SQL Safety Gate}
+    G -->|blocked<br/>DDL/DML, missing LIMIT| H[Return BLOCKED<br/>to agent]
+    G -->|allowed| I[BigQuery<br/>SELECT execution]
+    H --> B
+    I --> B
+
+    C -->|final answer| J[Raw JSON response]
+    J --> K{Output Validation Gate}
+    K -->|invalid schema| L[Raise ValueError]
+    K -->|valid| M[DQReport]
+
+    style G fill:#f9d5a7,stroke:#d68910
+    style K fill:#f9d5a7,stroke:#d68910
+    style L fill:#f5b7b1,stroke:#c0392b
+    style M fill:#abebc6,stroke:#27ae60
+```
+
+**Step by step:**
+
+1. `analyze_table()` creates a session ID and invokes the agent with a natural-language instruction (e.g. *"Analyze dataset.table: check for nulls, duplicates, outliers"*)
+2. The ReAct agent reasons about the task and typically starts by calling `get_table_schema` to understand column types
+3. Based on the schema, it issues one or more `run_bq_query` calls — each one is filtered by `sql_safety_gate` before hitting BigQuery
+4. When the agent believes it has enough evidence, it returns a JSON response
+5. `validate_output` parses the JSON and enforces the `DQReport` Pydantic schema — malformed output raises `ValueError` instead of leaking to the caller
+
 ## Output Schema
 
 Every successful run returns a `DQReport`:
