@@ -76,6 +76,40 @@ cp .env.example .env
 python src/agent.py
 ```
 
+## Docker
+
+The project ships with a multi-stage `Dockerfile` that builds a slim `python:3.11-slim` runtime image, installs dependencies in a separate builder stage for better caching, and runs as a non-root `agent` user.
+
+### Build
+
+```bash
+docker build -t dq-agent .
+```
+
+### Run
+
+Pass your credentials via an `.env` file:
+
+```bash
+docker run --rm --env-file .env dq-agent
+```
+
+If you authenticate to BigQuery via a service account key, mount it into the container and point `GOOGLE_APPLICATION_CREDENTIALS` at the mounted path:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -v $HOME/.config/gcloud/sa-key.json:/secrets/sa-key.json:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/sa-key.json \
+  dq-agent
+```
+
+### Notes
+
+- The image runs `python -m src.agent` as its default command
+- Tests, `.venv/`, `.git/`, and markdown files (except `AGENTS.md`) are excluded via `.dockerignore`
+- The container runs as a non-root user (`agent`) for security
+
 ## Environment Variables
 
 | Variable | Description |
