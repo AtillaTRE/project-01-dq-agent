@@ -6,6 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.logging_config import setup_logging
+
+logger = setup_logging(service_name="dq-harness")
+
 
 class DQIssue(BaseModel):
     """Um problema de qualidade detectado."""
@@ -20,7 +24,7 @@ class DQReport(BaseModel):
     table:        str
     total_rows:   int = Field(..., ge=0)
     issues:       list[DQIssue]
-    summary:      str = Field(..., min_length=10, max_length=500)
+    summary:      str = Field(..., min_length=10, max_length=1500)
 
 
 FORBIDDEN_KEYWORDS = [
@@ -64,10 +68,25 @@ def _extract_json(text: str) -> str:
 
 
 def validate_output(raw: str) -> DQReport:
-    """Harness gate: valida schema da saída final do agente."""
     try:
         json_str = _extract_json(raw)
         data = json.loads(json_str)
+
+        summary = data.get("summary", "")
+        if len(summary) > 500:
+            logger.warning(
+                "Summary truncated by harness",
+                extra={
+                    "original_length":  len(summary),
+                    "truncated_length": 500,
+                },
+            )
+            data["summary"] = summary[:497] + "..."
+
         return DQReport(**data)
     except Exception as e:
+        logger.error(
+            "Harness rejected output",
+            extra={"raw_preview": raw[:500], "error": str(e)},
+        )
         raise ValueError(f"Harness rejected output: {e}") from e

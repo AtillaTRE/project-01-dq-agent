@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     google_cloud_project: str = Field(..., alias="GOOGLE_CLOUD_PROJECT")
     bq_dataset:           str = Field("ecommerce_demo", alias="BQ_DATASET")
     bq_table:             str = Field("orders",         alias="BQ_TABLE")
+    cube_api_url:    str = Field("", alias="CUBE_API_URL")
+    cube_api_token: str = Field("", alias="CUBE_API_TOKEN")
 
     # Feature flag: uses Secret Manager or .env
     use_secret_manager: bool = Field(False, alias="USE_SECRET_MANAGER")
