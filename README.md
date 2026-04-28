@@ -4,10 +4,16 @@
 
 A LangGraph agent that analyzes BigQuery tables and produces structured data quality reports. Powered by Claude (Anthropic) and hardened with a safety harness that blocks dangerous SQL and validates every output.
 
+The project ships **two execution modes**:
+
+- **Direct BigQuery mode** (`src/agent.py`) — the agent writes raw `SELECT` statements against BigQuery, gated by a SQL safety harness.
+- **Hybrid Cube mode** (`src/cube_agent.py`) — the agent inspects the BigQuery schema for context but runs all metric queries through the [Cube](https://cube.dev/) semantic layer, gated by a Cube-specific harness. This avoids ad-hoc SQL and keeps queries aligned with governed business definitions.
+
 ## Features
 
 - **Automated DQ analysis** — detects nulls, duplicates, and outliers via natural language instructions to Claude
 - **SQL safety harness** — allows only `SELECT` statements with a required `LIMIT`; blocks all DDL/DML (`DELETE`, `UPDATE`, `DROP`, etc.)
+- **Cube semantic-layer harness** — restricts queries to allow-listed views, caps dimensions and result size, and requires at least one measure
 - **Structured output validation** — every agent response is parsed and validated against a `DQReport` Pydantic schema before being returned
 - **Structured JSON logging** — all tool calls and analysis steps are logged with metadata (session ID, table, duration, bytes processed)
 - **LangSmith tracing** — full execution traces available in the `dq-agent-project` LangSmith project
@@ -19,6 +25,7 @@ A LangGraph agent that analyzes BigQuery tables and produces structured data qua
 | Agent framework | LangGraph + LangChain |
 | LLM | Claude Sonnet (`claude-sonnet-4-6`) |
 | Data warehouse | Google Cloud BigQuery |
+| Semantic layer (optional) | Cube Cloud REST API |
 | Schema validation | Pydantic v2 |
 | Config | python-dotenv |
 | Linting | Ruff |
@@ -29,13 +36,18 @@ A LangGraph agent that analyzes BigQuery tables and produces structured data qua
 
 ```
 src/
-├── agent.py        # Entry point — builds the ReAct agent and exposes analyze_table()
-├── tools.py        # LangChain tools: get_table_schema, run_bq_query
-├── harness.py      # Safety gates: sql_safety_gate, validate_output, DQReport schema
-├── config.py       # Settings loaded from environment variables
-└── logging_config.py  # Structured JSON logger setup
+├── agent.py          # Entry point (BQ mode) — builds the ReAct agent and exposes analyze_table()
+├── tools.py          # LangChain tools: get_table_schema, run_bq_query
+├── harness.py        # Safety gates: sql_safety_gate, validate_output, DQReport schema
+├── cube_agent.py     # Entry point (Cube mode) — hybrid agent: BQ for schema, Cube for metrics
+├── cube_tools.py     # LangChain tools: list_cube_metrics, query_cube
+├── cube_client.py    # HTTP client for the Cube Cloud REST API
+├── cube_harness.py   # Cube-specific gates (allowed views, dimension/limit caps)
+├── config.py         # Settings loaded from environment variables
+└── logging_config.py # Structured JSON logger setup
 tests/
-AGENTS.md           # System prompt injected into the agent
+AGENTS.md             # System prompt injected into the BQ agent
+AGENTS_cube.md        # System prompt injected into the hybrid Cube agent
 ```
 
 ## Execution Flow
@@ -111,9 +123,19 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your ANTHROPIC_API_KEY, GOOGLE_CLOUD_PROJECT, BQ_DATASET, BQ_TABLE
 
-# 3. Run
+# 3. Run (direct BigQuery mode)
 python src/agent.py
+
+# Or, run the hybrid Cube mode (requires CUBE_API_URL and CUBE_API_TOKEN in .env)
+python -m src.cube_agent
 ```
+
+### Choosing a mode
+
+| Mode | Entry point | When to use |
+|---|---|---|
+| Direct BigQuery | `python src/agent.py` | No semantic layer available; you want the agent to write SQL directly. |
+| Hybrid Cube | `python -m src.cube_agent` | A Cube semantic layer exists; queries should reuse governed measures/dimensions instead of raw SQL. |
 
 ## Docker
 
@@ -157,6 +179,8 @@ docker run --rm \
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID |
 | `BQ_DATASET` | Default BigQuery dataset to analyze |
 | `BQ_TABLE` | Default BigQuery table to analyze |
+| `CUBE_API_URL` | (Cube mode) Base URL for the Cube Cloud REST API (e.g. `https://<deployment>.cubecloud.dev/cubejs-api/v1`) |
+| `CUBE_API_TOKEN` | (Cube mode) JWT used in the `Authorization` header for Cube requests |
 | `LANGSMITH_API_KEY` | (optional) LangSmith tracing key |
 | `USE_SECRET_MANAGER` | Set to `true` to load secrets from Google Secret Manager |
 
@@ -173,6 +197,13 @@ The harness enforces two gates on every agent run:
    - Extracts the first JSON object from the response (strips markdown fences)
    - Validates it against the `DQReport` Pydantic schema
    - Raises `ValueError` if the schema is not satisfied, preventing malformed reports from reaching callers
+
+In **hybrid Cube mode**, `run_bq_query` is replaced by `query_cube`, and a separate `validate_cube_query` gate (in `src/cube_harness.py`) is enforced before each Cube call:
+
+- Query must declare at least one measure
+- Maximum of 5 dimensions per query (avoids cartesian explosion)
+- `limit` capped at 5000 rows
+- Only allow-listed views may be queried (e.g. `ecommerce_analytics`); private cubes are rejected
 
 ## Running Tests
 
