@@ -23,3 +23,7 @@ init_typed = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --cov=src --cov-report=term-missing"
+# Put the repo root on sys.path so `from src... import` resolves. Without this,
+# bare `pytest` fails with ModuleNotFoundError: No module named 'src' — only
+# `python -m pytest` happens to work, because that form adds the CWD implicitly.
+pythonpath = ["."]
