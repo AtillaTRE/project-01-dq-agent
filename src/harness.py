@@ -10,9 +10,13 @@ from src.logging_config import setup_logging
 
 logger = setup_logging(service_name="dq-harness")
 
+# Single source of truth for the summary limit. AGENTS.md and AGENTS_cube.md
+# state the same number to the model; the harness enforces it.
+MAX_SUMMARY_LENGTH = 500
+
 
 class DQIssue(BaseModel):
-    """Um problema de qualidade detectado."""
+    """A single detected data quality problem."""
     severity: Literal["low", "medium", "high", "critical"]
     field:    str
     issue:    str
@@ -20,11 +24,11 @@ class DQIssue(BaseModel):
 
 
 class DQReport(BaseModel):
-    """Output schema obrigatório do agente."""
+    """Required output schema of the agent."""
     table:        str
     total_rows:   int = Field(..., ge=0)
     issues:       list[DQIssue]
-    summary:      str = Field(..., min_length=10, max_length=1500)
+    summary:      str = Field(..., min_length=10, max_length=MAX_SUMMARY_LENGTH)
 
 
 FORBIDDEN_KEYWORDS = [
@@ -34,16 +38,26 @@ FORBIDDEN_KEYWORDS = [
 
 
 def sql_safety_gate(sql: str) -> dict:
-    """Harness gate: bloqueia SQL perigoso."""
-    sql_upper = sql.upper()
+    """Harness gate: block SQL that is not a read-only, bounded query.
+
+    This is a lexical gate, not a SQL parser. See "Known limitations" in
+    README.md — it is a guardrail against agent mistakes, not a substitute
+    for read-only IAM credentials.
+    """
+    sql_upper = sql.upper().strip()
 
     for kw in FORBIDDEN_KEYWORDS:
-        # \b garante match de palavra inteira (não match "CREATED_AT")
+        # \b matches whole words only, so a column like CREATED_AT is not a CREATE.
         if re.search(rf"\b{kw}\b", sql_upper):
             return {"allowed": False, "reason": f"{kw} not allowed"}
 
-    if not sql_upper.strip().startswith("SELECT"):
-        return {"allowed": False, "reason": "Only SELECT is allowed"}
+    # Reject statement batches: one trailing semicolon is fine, anything after it is not.
+    if ";" in sql_upper.rstrip(";").rstrip():
+        return {"allowed": False, "reason": "Multiple statements are not allowed"}
+
+    # A CTE is still a read-only query, so WITH ... SELECT is accepted.
+    if not sql_upper.startswith(("SELECT", "WITH")):
+        return {"allowed": False, "reason": "Only SELECT (or WITH ... SELECT) is allowed"}
 
     if not re.search(r"\bLIMIT\s+\d+", sql_upper):
         return {"allowed": False, "reason": "LIMIT clause is required"}
@@ -52,12 +66,12 @@ def sql_safety_gate(sql: str) -> dict:
 
 
 def _extract_json(text: str) -> str:
-    """Extrai o primeiro objeto JSON de um texto, mesmo cercado de prose."""
-    # Remove markdown code fences se existirem
+    """Extract the first JSON object from a text, even when surrounded by prose."""
+    # Strip markdown code fences if present
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```", "", text)
 
-    # Acha o primeiro { e o último } correspondente
+    # Find the first { and the last matching }
     start = text.find("{")
     end = text.rfind("}")
 
@@ -68,20 +82,25 @@ def _extract_json(text: str) -> str:
 
 
 def validate_output(raw: str) -> DQReport:
+    """Parse the agent's final message and validate it against DQReport.
+
+    An over-long summary is truncated rather than rejected: the analysis behind
+    it is still sound, and rejecting would discard a complete report over prose.
+    """
     try:
         json_str = _extract_json(raw)
         data = json.loads(json_str)
 
         summary = data.get("summary", "")
-        if len(summary) > 500:
+        if len(summary) > MAX_SUMMARY_LENGTH:
             logger.warning(
                 "Summary truncated by harness",
                 extra={
                     "original_length":  len(summary),
-                    "truncated_length": 500,
+                    "truncated_length": MAX_SUMMARY_LENGTH,
                 },
             )
-            data["summary"] = summary[:497] + "..."
+            data["summary"] = summary[: MAX_SUMMARY_LENGTH - 3] + "..."
 
         return DQReport(**data)
     except Exception as e:

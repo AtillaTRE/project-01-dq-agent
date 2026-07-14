@@ -1,23 +1,27 @@
 # src/cube_agent.py
 # Hybrid agent: uses BQ for schema, Cube for metrics.
 
-from langgraph.prebuilt import create_react_agent
+import uuid
+from pathlib import Path
+
 from langchain_anthropic import ChatAnthropic
 from langchain_core.runnables import RunnableConfig
-from src.config         import settings
-from src.tools          import get_table_schema  # reused from the original
-from src.cube_tools     import list_cube_metrics, query_cube
-from src.harness        import DQReport, validate_output
+from langgraph.prebuilt import create_react_agent
+
+from src.config import settings
+from src.cube_tools import list_cube_metrics, query_cube
+from src.harness import DQReport
 from src.logging_config import setup_logging
-import uuid
+from src.tools import get_table_schema  # reused from the original
 
 logger = setup_logging(service_name="cube-agent")
 
 llm    = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=4096)
 tools  = [get_table_schema, list_cube_metrics, query_cube]
 
-with open("AGENTS_cube.md") as f:
-    system_prompt = f.read()
+# Resolved from the source file, not the CWD, so the agent runs from any directory.
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "AGENTS_cube.md"
+system_prompt = PROMPT_PATH.read_text(encoding="utf-8")
 
 agent          = create_react_agent(llm, tools, prompt=system_prompt)
 structured_llm = llm.with_structured_output(DQReport)
@@ -62,7 +66,7 @@ def analyze_table_with_cube(
 
     findings = investigation["messages"][-1].content
 
-    report = structured_llm.invoke(
+    raw_report = structured_llm.invoke(
         f"""Based on this investigation, produce a DQReport.
 
 Findings:
@@ -71,6 +75,14 @@ Findings:
 Table: {dataset}.{table}
 
 Return structured DQReport with all issues as objects."""
+    )
+
+    # with_structured_output may hand back a dict or a model depending on the
+    # provider path; coerce to DQReport so the schema is enforced either way.
+    report = (
+        raw_report
+        if isinstance(raw_report, DQReport)
+        else DQReport.model_validate(raw_report)
     )
 
     logger.info(

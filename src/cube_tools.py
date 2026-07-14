@@ -1,11 +1,13 @@
 # src/cube_tools.py
 # Agent tools that talk to Cube.
 
+import json
+
 from langchain_core.tools import tool
+
 from src.cube_client import cube_client
 from src.cube_harness import validate_cube_query
 from src.logging_config import setup_logging
-import json
 
 logger = setup_logging(service_name="cube-tools")
 
@@ -66,7 +68,7 @@ def query_cube(
     """Run a query against the Cube semantic layer.
 
     Args:
-        measures: list of measures (e.g. ["ecommerce_analytics.revenue"])
+        measures: list of measures (e.g. ["orders_view.total_amount"])
         dimensions: list of dimensions to group by
         filters: list of filters [{"member": "...", "operator": "...", "values": [...]}]
         time_dimensions: time filters and granularity

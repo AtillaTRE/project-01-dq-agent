@@ -1,27 +1,31 @@
 # src/agent.py
 
-from langgraph.prebuilt import create_react_agent
+import uuid
+from pathlib import Path
+
 from langchain_anthropic import ChatAnthropic
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import create_react_agent
+
 from src.config import settings
-from src.tools import get_table_schema, run_bq_query
 from src.harness import validate_output
 from src.logging_config import setup_logging
-import uuid
+from src.tools import get_table_schema, run_bq_query
 
 logger = setup_logging(service_name="dq-agent")
 
 llm = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=4096)
 tools = [get_table_schema, run_bq_query]
 
-with open("AGENTS.md") as f:
-    system_prompt = f.read()
+# Resolved from the source file, not the CWD, so the agent runs from any directory.
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "AGENTS.md"
+system_prompt = PROMPT_PATH.read_text(encoding="utf-8")
 
 agent = create_react_agent(llm, tools, prompt=system_prompt)
 
 
 def analyze_table(dataset: str, table: str, user_id: str = "local") -> dict:
-    """Entry point. Retorna um DQReport validado."""
+    """Entry point. Returns a validated DQReport."""
     session_id = str(uuid.uuid4())
 
     logger.info(

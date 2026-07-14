@@ -1,6 +1,6 @@
 # src/config.py
-# Centrilizes all configuration. In Prod it searches for Secret Manager.
-# In dev local, uses .env if exists. Always validates with Pydantic.
+# Centralizes all configuration. In prod it reads from Secret Manager.
+# In local dev it falls back to .env if present. Always validated with Pydantic.
 
 import os
 
@@ -37,7 +37,6 @@ class Settings(BaseSettings):
 
     # Harness config
     max_query_rows:       int = 1000
-    max_retries:          int = 3
     langsmith_project:    str = "dq-agent-project"
     langsmith_tracing:    bool = True
 

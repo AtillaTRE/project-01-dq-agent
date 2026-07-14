@@ -16,7 +16,8 @@ Returns available measures, dimensions and their descriptions.
 
 ### query_cube(measures, dimensions, filters, ...)
 Use to query business metrics through the semantic layer.
-Pass measures and dimensions BY NAME (e.g. "ecommerce_analytics.revenue").
+Pass measures and dimensions BY NAME (e.g. "orders_view.total_amount").
+Only the views listed below are allowed — any other view is rejected by the harness.
 
 ## Decision rule
 

@@ -11,6 +11,14 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+# Without this plugin mypy derives __init__ from pydantic field *aliases*, so it
+# rejects ChatAnthropic(model=...) and demands the alias model_name=. The plugin
+# understands populate_by_name and accepts both.
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

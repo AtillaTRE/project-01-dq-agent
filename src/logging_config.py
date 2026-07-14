@@ -20,6 +20,7 @@ def setup_logging(
         return logger  # avoids duplicate handlers
 
     handler = logging.StreamHandler(sys.stdout)
+    formatter: logging.Formatter
 
     if json_format:
         # Structured JSON for prod (Cloud Logging parses it automatically)

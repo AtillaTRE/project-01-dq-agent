@@ -1,8 +1,11 @@
 # src/cube_client.py
-# Client HTTP for Cube Cloud with JWT auth.
+# HTTP client for Cube Cloud with JWT auth.
+
+import time
+from typing import Any, cast
 
 import requests
-import time
+
 from src.config import settings
 from src.logging_config import setup_logging
 
@@ -22,14 +25,14 @@ class CubeClient:
             "Content-Type":  "application/json",
         }
 
-    def meta(self) -> dict:
+    def meta(self) -> dict[str, Any]:
         """List available cubes, views, measures and dimensions."""
         url = f"{self.base_url}/meta"
         response = requests.get(url, headers=self._headers(), timeout=30)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
-    def load(self, query: dict) -> dict:
+    def load(self, query: dict) -> dict[str, Any]:
         """Run a query and return the data."""
         url = f"{self.base_url}/load"
         start = time.time()
@@ -50,7 +53,7 @@ class CubeClient:
             )
             response.raise_for_status()
 
-        result = response.json()
+        result = cast(dict[str, Any], response.json())
         logger.info(
             "Cube query executed",
             extra={

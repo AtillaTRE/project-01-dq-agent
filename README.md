@@ -1,5 +1,6 @@
 # Data Quality Agent
 
+[![CI](https://github.com/AtillaTRE/project-01-dq-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/AtillaTRE/project-01-dq-agent/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)]()
 
 A LangGraph agent that analyzes BigQuery tables and produces structured data quality reports. Powered by Claude (Anthropic) and hardened with a safety harness that blocks dangerous SQL and validates every output.
@@ -45,7 +46,10 @@ src/
 ├── cube_harness.py   # Cube-specific gates (allowed views, dimension/limit caps)
 ├── config.py         # Settings loaded from environment variables
 └── logging_config.py # Structured JSON logger setup
-tests/
+tests/                # Harness gate tests — no credentials required
+scripts/
+└── cube_smoke.py     # Manual smoke check against a live Cube deployment
+docs/
 AGENTS.md             # System prompt injected into the BQ agent
 AGENTS_cube.md        # System prompt injected into the hybrid Cube agent
 ```
@@ -111,6 +115,10 @@ Every successful run returns a `DQReport`:
 
 Severity levels: `low` | `medium` | `high` | `critical`
 
+`summary` is capped at **500 characters**. The agent is instructed to stay under that
+limit in its system prompt, and `validate_output` truncates anything longer rather than
+failing the run.
+
 ## Quick Start
 
 ```bash
@@ -124,17 +132,21 @@ cp .env.example .env
 # Edit .env with your ANTHROPIC_API_KEY, GOOGLE_CLOUD_PROJECT, BQ_DATASET, BQ_TABLE
 
 # 3. Run (direct BigQuery mode)
-python src/agent.py
+python -m src.agent
 
 # Or, run the hybrid Cube mode (requires CUBE_API_URL and CUBE_API_TOKEN in .env)
 python -m src.cube_agent
 ```
 
+Both entry points are Python modules and must be run with `python -m` from the
+repository root. `python src/agent.py` does **not** work: it puts `src/` itself on
+`sys.path`, so the package-absolute imports (`from src.config import ...`) fail.
+
 ### Choosing a mode
 
 | Mode | Entry point | When to use |
 |---|---|---|
-| Direct BigQuery | `python src/agent.py` | No semantic layer available; you want the agent to write SQL directly. |
+| Direct BigQuery | `python -m src.agent` | No semantic layer available; you want the agent to write SQL directly. |
 | Hybrid Cube | `python -m src.cube_agent` | A Cube semantic layer exists; queries should reuse governed measures/dimensions instead of raw SQL. |
 
 ## Docker
@@ -167,8 +179,10 @@ docker run --rm \
 
 ### Notes
 
-- The image runs `python -m src.agent` as its default command
-- Tests, `.venv/`, `.git/`, and markdown files (except `AGENTS.md`) are excluded via `.dockerignore`
+- The image runs `python -m src.agent` as its default command. For Cube mode, override it:
+  `docker run --rm --env-file .env dq-agent python -m src.cube_agent`
+- Tests, scripts, docs, `.venv/`, `.git/`, and markdown files (except the two `AGENTS*.md`
+  system prompts, which are read at import time) are excluded via `.dockerignore`
 - The container runs as a non-root user (`agent`) for security
 
 ## Environment Variables
@@ -189,13 +203,15 @@ docker run --rm \
 The harness enforces two gates on every agent run:
 
 1. **SQL safety gate** (`sql_safety_gate`) — called before every `run_bq_query` invocation:
-   - Only `SELECT` statements are allowed
+   - Only read queries are allowed: the statement must start with `SELECT` or `WITH` (a CTE is still read-only)
    - A `LIMIT` clause is required
-   - Keywords `DELETE`, `UPDATE`, `INSERT`, `DROP`, `CREATE`, `ALTER`, `TRUNCATE`, `MERGE` are blocked
+   - Keywords `DELETE`, `UPDATE`, `INSERT`, `DROP`, `CREATE`, `ALTER`, `TRUNCATE`, `MERGE` are blocked as whole words, so a column named `created_at` does not trip the `CREATE` rule
+   - Statement batches are rejected — a single trailing `;` is fine, but `SELECT ...; DELETE ...` is not
 
 2. **Output validation gate** (`validate_output`) — called on the final agent message:
    - Extracts the first JSON object from the response (strips markdown fences)
    - Validates it against the `DQReport` Pydantic schema
+   - Truncates `summary` to 500 characters (`MAX_SUMMARY_LENGTH`) rather than rejecting the report — the analysis is still sound if only the prose ran long
    - Raises `ValueError` if the schema is not satisfied, preventing malformed reports from reaching callers
 
 In **hybrid Cube mode**, `run_bq_query` is replaced by `query_cube`, and a separate `validate_cube_query` gate (in `src/cube_harness.py`) is enforced before each Cube call:
@@ -203,10 +219,33 @@ In **hybrid Cube mode**, `run_bq_query` is replaced by `query_cube`, and a separ
 - Query must declare at least one measure
 - Maximum of 5 dimensions per query (avoids cartesian explosion)
 - `limit` capped at 5000 rows
-- Only allow-listed views may be queried (e.g. `ecommerce_analytics`); private cubes are rejected
+- Only allow-listed views may be queried — `orders_view`, `products_view`, `stream_events_view`; any other view, and any private cube, is rejected
 
-## Running Tests
+## Known Limitations
+
+Stated explicitly, because a harness that oversells itself is worse than no harness.
+
+- **`sql_safety_gate` is a lexical gate, not a SQL parser.** It matches keywords with regex on the raw string. A forbidden keyword hidden inside a string literal or a comment (e.g. `SELECT '-- DELETE' ... LIMIT 1`) can still trip a false positive, and a sufficiently exotic dialect construct could in principle evade the check. It is a guardrail against a *mistaken* agent, not a defence against an adversarial one.
+- **The real boundary is IAM, not the harness.** In any deployment that matters, the service account should hold read-only BigQuery permissions. The gate exists to catch the agent doing something dumb and to fail loudly and cheaply, before the request ever reaches BigQuery — not to be the only thing standing between an LLM and your warehouse. A proper defence-in-depth version would parse the SQL (e.g. `sqlglot`) and assert the AST contains only read nodes.
+- **`LIMIT` is required but not bounded.** The gate requires a `LIMIT` clause; it does not check the value. Row count is capped after the fact by `max_query_rows`, so a large `LIMIT` still scans the data (and costs money) even though few rows are returned.
+- **The Cube allow-list is enforced on the view name only.** It does not validate that the referenced measure or dimension actually exists — an invalid member on an allowed view fails at Cube, not at the gate.
+
+## Development
+
+Lint, type-check and test — the same three commands CI runs:
 
 ```bash
+ruff check src tests scripts
+mypy src
 pytest
+```
+
+The test suite covers the harness gates, which are pure functions with no BigQuery,
+Cube or Anthropic dependency. CI therefore runs with **no cloud credentials**.
+
+`scripts/cube_smoke.py` is a manual check against a live Cube deployment. It needs
+real credentials, so it lives outside `tests/` and is never collected by pytest:
+
+```bash
+python -m scripts.cube_smoke
 ```
